@@ -231,7 +231,23 @@ html,body{width:100%;height:100%;overflow:hidden;background:#110805;font-family:
     <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
     Connect Google Drive
   </button>
-  <div class="cs-note">This only happens once. After connecting, the app opens automatically every time — on any device.</div>
+  <div class="cs-settings-toggle" onclick="toggleSettings()" style="color:var(--gold);cursor:pointer;font-size:0.8rem;text-decoration:underline;margin-top:0.9rem;font-family:var(--sans);">⚙️ Custom Google App Settings (Localhost/Vercel)</div>
+  <div id="cs-settings-panel" style="display:none;width:100%;max-width:340px;background:rgba(255,255,255,0.05);border:1px solid rgba(201,168,76,0.2);border-radius:10px;padding:1rem;margin-top:0.75rem;text-align:left;">
+    <div class="field" style="margin-bottom:0.8rem;">
+      <label style="color:var(--gold);font-size:0.6rem;letter-spacing:0.1em;">Google Client ID</label>
+      <input type="text" id="cfg-client-id" style="width:100%;font-size:0.75rem;padding:0.4rem;background:#1a0e0a;color:var(--cream);border:1px solid var(--rose);border-radius:4px;outline:none;">
+    </div>
+    <div class="field" style="margin-bottom:0.8rem;">
+      <label style="color:var(--gold);font-size:0.6rem;letter-spacing:0.1em;">Redirect URI</label>
+      <input type="text" id="cfg-redirect-uri" style="width:100%;font-size:0.75rem;padding:0.4rem;background:#1a0e0a;color:var(--cream);border:1px solid var(--rose);border-radius:4px;outline:none;">
+    </div>
+    <div class="field" style="margin-bottom:0.8rem;">
+      <label style="color:var(--gold);font-size:0.6rem;letter-spacing:0.1em;">Google Drive Folder ID (Optional)</label>
+      <input type="text" id="cfg-folder-id" style="width:100%;font-size:0.75rem;padding:0.4rem;background:#1a0e0a;color:var(--cream);border:1px solid var(--rose);border-radius:4px;outline:none;">
+    </div>
+    <button onclick="saveConfig()" style="width:100%;background:var(--rose);color:#fff;border:none;border-radius:4px;padding:0.45rem;font-size:0.8rem;cursor:pointer;font-family:var(--serif);font-style:italic;">Save &amp; Apply Settings</button>
+  </div>
+  <div class="cs-note" style="margin-top:0.8rem;">This only happens once. After connecting, the app opens automatically every time — on any device.</div>
 </div>
 
 <!-- All files -->
@@ -326,9 +342,9 @@ html,body{width:100%;height:100%;overflow:hidden;background:#110805;font-family:
 // ═══════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════
-const CLIENT_ID   = '732010767720-e6q7oc2okpk5ua0bam8a7d97395v0c8c.apps.googleusercontent.com';
-const ROOT_FOLDER = '13Q1y0FHe2WnlrgKPafml325PGwmyx6SK'; // personal Drive folder (shared with us)
-const REDIRECT    = 'https://dates-of78.netlify.app/';
+const CLIENT_ID   = localStorage.getItem('os-client-id') || '732010767720-e6q7oc2okpk5ua0bam8a7d97395v0c8c.apps.googleusercontent.com';
+const ROOT_FOLDER = localStorage.getItem('os-root-folder') || '13Q1y0FHe2WnlrgKPafml325PGwmyx6SK'; 
+const REDIRECT    = localStorage.getItem('os-redirect-uri') || 'https://dates-of78.netlify.app/';
 const SCOPE       = 'https://www.googleapis.com/auth/drive.file';
 const META_NAME   = 'ourstory-meta.json';
 
@@ -434,6 +450,37 @@ function silentRefresh(){
 function showConnectScreen(){
   document.getElementById('ls').classList.add('hide');
   document.getElementById('connect-screen').classList.add('show');
+}
+
+function toggleSettings(){
+  const panel = document.getElementById('cs-settings-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  
+  document.getElementById('cfg-client-id').value = localStorage.getItem('os-client-id') || '732010767720-e6q7oc2okpk5ua0bam8a7d97395v0c8c.apps.googleusercontent.com';
+  document.getElementById('cfg-redirect-uri').value = localStorage.getItem('os-redirect-uri') || (window.location.origin + window.location.pathname);
+  document.getElementById('cfg-folder-id').value = localStorage.getItem('os-root-folder') || '13Q1y0FHe2WnlrgKPafml325PGwmyx6SK';
+}
+
+function saveConfig(){
+  const cid = document.getElementById('cfg-client-id').value.trim();
+  const ruri = document.getElementById('cfg-redirect-uri').value.trim();
+  const fid = document.getElementById('cfg-folder-id').value.trim();
+  
+  if(!cid || !ruri){
+    alert('Client ID and Redirect URI are required!');
+    return;
+  }
+  
+  localStorage.setItem('os-client-id', cid);
+  localStorage.setItem('os-redirect-uri', ruri);
+  if(fid) {
+    localStorage.setItem('os-root-folder', fid);
+  } else {
+    localStorage.removeItem('os-root-folder');
+  }
+  
+  alert('Settings saved! Reloading page...');
+  window.location.reload();
 }
 
 // ═══════════════════════════════════════════
