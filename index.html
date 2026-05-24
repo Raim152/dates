@@ -210,6 +210,17 @@ html,body{width:100%;height:100%;overflow:hidden;background:#110805;font-family:
       <span>Status:</span> <strong id="sync-status-lbl" style="color:var(--muted);">Not Connected</strong>
     </div>
 
+    <!-- Sync Progress Bar -->
+    <div id="sync-progress-container" style="display:none;margin-bottom:1.1rem;padding:0.75rem 0.95rem;background:rgba(201,168,76,0.06);border-radius:8px;border:1px solid rgba(201,168,76,0.15);">
+      <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--ink);margin-bottom:0.4rem;font-weight:600;">
+        <span id="sync-progress-text">Syncing files...</span>
+        <span id="sync-progress-perc">0%</span>
+      </div>
+      <div style="width:100%;height:4px;background:rgba(201,168,76,0.15);border-radius:2px;overflow:hidden;">
+        <div id="sync-progress-bar" style="width:0%;height:100%;background:var(--gold);transition:width 0.3s;"></div>
+      </div>
+    </div>
+
     <div class="field">
       <label>Google Client ID</label>
       <input type="text" id="cfg-client-id" placeholder="Paste your Google Client ID here..." style="font-size:0.8rem;">
@@ -340,7 +351,6 @@ const safeStorage = {
 //  CONFIG
 // ═══════════════════════════════════════════
 const CLIENT_ID   = safeStorage.getItem('os-client-id') || '';
-const ROOT_FOLDER = safeStorage.getItem('os-root-folder') || '13Q1y0FHe2WnlrgKPafml325PGwmyx6SK'; 
 const REDIRECT    = safeStorage.getItem('os-redirect-uri') || (window.location.origin + window.location.pathname);
 const SCOPE       = 'https://www.googleapis.com/auth/drive.file';
 const META_NAME   = 'ourstory-meta.json';
@@ -410,6 +420,8 @@ let deletingId=null;
 let accessToken=null;
 let tokenExpiry=0;
 let metaFileId=null;
+let coverImgDriveId=safeStorage.getItem('os-cover-drive-id')||null;
+let isSyncing=false;
 
 const AM=880, EASE='cubic-bezier(0.5,0.0,0.28,1.0)';
 
@@ -543,28 +555,372 @@ async function uploadMultipart(name,mimeType,body,parentId,existingId=null){
   return r.json();
 }
 
+function dataURLtoBlob(dataURL) {
+  if (!dataURL) return null;
+  try {
+    const arr = dataURL.split(','), mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while(n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], {type:mime});
+  } catch (e) {
+    console.error("dataURLtoBlob failed:", e);
+    return null;
+  }
+}
+
+async function getAppRootFolder() {
+  let rid = safeStorage.getItem('os-root-folder');
+  if (rid) return rid;
+  try {
+    const q = `mimeType='application/vnd.google-apps.folder' and name='Our Story' and 'root' in parents and trashed=false`;
+    const r = await dFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)&spaces=drive`);
+    const d = await r.json();
+    let id = d.files?.[0]?.id || null;
+    if (!id) {
+      const cr = await dFetch('https://www.googleapis.com/drive/v3/files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Our Story',
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: ['root']
+        })
+      });
+      const cd = await cr.json();
+      id = cd.id;
+    }
+    safeStorage.setItem('os-root-folder', id);
+    return id;
+  } catch (e) {
+    console.error('Error getting/creating root folder:', e);
+    throw e;
+  }
+}
+
+async function downloadFile(driveId) {
+  const r = await dFetch(`https://www.googleapis.com/drive/v3/files/${driveId}?alt=media`);
+  const blob = await r.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function syncCloud() {
+  if (isSyncing) return;
+  if (!loadToken() && !accessToken) return;
+  
+  isSyncing = true;
+  updateSyncButton('busy', 'Syncing…');
+  updateSyncProgress('Connecting to Google Drive…', 10, 100);
+  
+  try {
+    const rootId = await getAppRootFolder();
+    
+    // Find or create metadata file
+    updateSyncProgress('Locating story metadata…', 20, 100);
+    metaFileId = safeStorage.getItem('os-meta-id') || null;
+    if (!metaFileId) {
+      const f = await findFile(META_NAME, rootId);
+      if (f) {
+        metaFileId = f.id;
+        safeStorage.setItem('os-meta-id', metaFileId);
+      }
+    }
+    
+    // Read remote metadata if exists
+    let remoteMeta = null;
+    if (metaFileId) {
+      updateSyncProgress('Downloading remote metadata…', 30, 100);
+      try {
+        const t = await getToken();
+        const r = await fetch(`https://www.googleapis.com/drive/v3/files/${metaFileId}?alt=media`, {
+          headers: { 'Authorization': 'Bearer ' + t }
+        });
+        if (r.ok) {
+          remoteMeta = await r.json();
+        }
+      } catch (e) {
+        console.warn('Could not read remote metadata, starting fresh metadata:', e);
+      }
+    }
+    
+    // Start merging
+    updateSyncProgress('Merging memories…', 40, 100);
+    
+    // 1. Merge coverNames
+    if (remoteMeta && remoteMeta.coverNames) {
+      coverNames = remoteMeta.coverNames;
+      await dbSet('coverNames', coverNames);
+    }
+    
+    // 2. Merge book cover image
+    let localCover = await dbGet('coverImg') || '';
+    let remoteCoverId = remoteMeta?.coverImgDriveId || null;
+    coverImgDriveId = remoteCoverId;
+    if (coverImgDriveId) {
+      safeStorage.setItem('os-cover-drive-id', coverImgDriveId);
+    }
+    
+    if (localCover && !coverImgDriveId) {
+      // Local cover has been set or updated, upload it to Drive
+      updateSyncProgress('Uploading book cover…', 45, 100);
+      const blob = dataURLtoBlob(localCover);
+      if (blob) {
+        const res = await uploadMultipart('book-cover.png', blob.type, blob, rootId);
+        coverImgDriveId = res.id;
+        safeStorage.setItem('os-cover-drive-id', coverImgDriveId);
+      }
+    } else if (!localCover && coverImgDriveId) {
+      // Missing local cover, download it
+      updateSyncProgress('Downloading book cover…', 45, 100);
+      try {
+        localCover = await downloadFile(coverImgDriveId);
+        await dbSet('coverImg', localCover);
+        coverImg = localCover;
+      } catch (e) {
+        console.error('Failed to download book cover:', e);
+      }
+    }
+    
+    // 3. Merge dates list
+    const remoteDates = remoteMeta?.dates || [];
+    const localMap = new Map(dates.map(d => [d.id, d]));
+    const remoteMap = new Map(remoteDates.map(d => [d.id, d]));
+    const allIds = new Set([...localMap.keys(), ...remoteMap.keys()]);
+    const mergedDates = [];
+    
+    // We will build a queue of media files to upload/download
+    const uploadQueue = [];
+    const downloadQueue = [];
+    
+    for (const id of allIds) {
+      const localD = localMap.get(id);
+      const remoteD = remoteMap.get(id);
+      
+      if (localD && !remoteD) {
+        if (!localD.driveFolderId) {
+          // New local chapter: keep
+          mergedDates.push(localD);
+        } else {
+          // Chapter deleted remotely: discard
+        }
+      } else if (!localD && remoteD) {
+        // Remote chapter missing locally: keep
+        mergedDates.push(remoteD);
+      } else {
+        // Exists in both: merge fields
+        const mergedD = {
+          id: localD.id,
+          date: localD.date || remoteD.date,
+          dateLabel: localD.dateLabel || remoteD.dateLabel,
+          title: localD.title || remoteD.title || '',
+          note: localD.note || remoteD.note || '',
+          coverImg: localD.coverImg || null,
+          coverImgDriveId: localD.coverImgDriveId || remoteD.coverImgDriveId || null,
+          driveFolderId: localD.driveFolderId || remoteD.driveFolderId || null,
+          files: []
+        };
+        
+        // Merge files inside this chapter
+        const localFiles = localD.files || [];
+        const remoteFiles = remoteD.files || [];
+        
+        const localFileMap = new Map(localFiles.map(f => [f.name, f]));
+        const remoteFileMap = new Map(remoteFiles.map(f => [f.name, f]));
+        const allFileNames = new Set([...localFileMap.keys(), ...remoteFileMap.keys()]);
+        
+        for (const name of allFileNames) {
+          const lf = localFileMap.get(name);
+          const rf = remoteFileMap.get(name);
+          
+          if (lf && !rf) {
+            if (!lf.driveId) {
+              // Local-only new file: keep
+              mergedD.files.push(lf);
+            } else {
+              // Deleted remotely: discard
+            }
+          } else if (!lf && rf) {
+            // Remote-only file: download
+            mergedD.files.push(rf);
+          } else {
+            // In both: merge
+            mergedD.files.push({
+              name: lf.name,
+              type: lf.type || rf.type,
+              size: lf.size || rf.size,
+              data: lf.data || null,
+              driveId: lf.driveId || rf.driveId,
+              driveLink: lf.driveLink || rf.driveLink
+            });
+          }
+        }
+        
+        mergedDates.push(mergedD);
+      }
+    }
+    
+    // Update dates state locally first
+    dates = mergedDates;
+    await dbSet('dates', dates);
+    paint();
+    
+    // Inspect all merged dates to find covers/files that need upload or download
+    for (let i = 0; i < dates.length; i++) {
+      const d = dates[i];
+      
+      // Date cover sync
+      if (d.coverImg && !d.coverImgDriveId) {
+        uploadQueue.push({ type: 'cover', dateId: d.id, dateIdx: i, data: d.coverImg });
+      } else if (!d.coverImg && d.coverImgDriveId) {
+        downloadQueue.push({ type: 'cover', dateId: d.id, dateIdx: i, driveId: d.coverImgDriveId });
+      }
+      
+      // Date files sync
+      const files = d.files || [];
+      for (let j = 0; j < files.length; j++) {
+        const f = files[j];
+        if (f.data && !f.driveId) {
+          uploadQueue.push({ type: 'file', dateId: d.id, dateIdx: i, data: f.data, fileObj: f });
+        } else if (!f.data && f.driveId) {
+          downloadQueue.push({ type: 'file', dateId: d.id, dateIdx: i, driveId: f.driveId, fileIdx: j, fileName: f.name });
+        }
+      }
+    }
+    
+    const totalOps = uploadQueue.length + downloadQueue.length;
+    let completedOps = 0;
+    
+    if (totalOps > 0) {
+      updateSyncProgress(`Syncing media files (0/${totalOps})…`, 0, totalOps);
+      
+      // 1. Process Uploads
+      for (const item of uploadQueue) {
+        const d = dates[item.dateIdx];
+        if (!d) continue;
+        
+        // Ensure folder exists
+        const folderId = await getDateFolder(item.dateIdx);
+        
+        if (item.type === 'cover') {
+          updateSyncProgress(`Uploading chapter cover… (${completedOps}/${totalOps})`, completedOps, totalOps);
+          const blob = dataURLtoBlob(item.data);
+          if (blob) {
+            const res = await uploadMultipart(`cover_${Date.now()}.png`, blob.type, blob, folderId);
+            dates[item.dateIdx].coverImgDriveId = res.id;
+          }
+        } else if (item.type === 'file') {
+          updateSyncProgress(`Uploading ${item.fileObj.name}… (${completedOps}/${totalOps})`, completedOps, totalOps);
+          const blob = dataURLtoBlob(item.data);
+          if (blob) {
+            const res = await uploadMultipart(item.fileObj.name, item.fileObj.type || blob.type, blob, folderId);
+            const fi = dates[item.dateIdx].files.findIndex(f => f.name === item.fileObj.name);
+            if (fi !== -1) {
+              dates[item.dateIdx].files[fi].driveId = res.id;
+            }
+          }
+        }
+        completedOps++;
+        await dbSet('dates', dates);
+        paint();
+      }
+      
+      // 2. Process Downloads
+      for (const item of downloadQueue) {
+        const d = dates[item.dateIdx];
+        if (!d) continue;
+        
+        if (item.type === 'cover') {
+          updateSyncProgress(`Downloading chapter cover… (${completedOps}/${totalOps})`, completedOps, totalOps);
+          try {
+            const dataUrl = await downloadFile(item.driveId);
+            dates[item.dateIdx].coverImg = dataUrl;
+          } catch (e) {
+            console.error('Failed to download chapter cover:', e);
+          }
+        } else if (item.type === 'file') {
+          updateSyncProgress(`Downloading ${item.fileName}… (${completedOps}/${totalOps})`, completedOps, totalOps);
+          try {
+            const dataUrl = await downloadFile(item.driveId);
+            if (dates[item.dateIdx].files[item.fileIdx]) {
+              dates[item.dateIdx].files[item.fileIdx].data = dataUrl;
+            }
+          } catch (e) {
+            console.error('Failed to download memory file:', e);
+          }
+        }
+        completedOps++;
+        await dbSet('dates', dates);
+        paint();
+      }
+    }
+    
+    // Finally, upload the updated meta JSON to Drive
+    updateSyncProgress('Saving metadata to Drive…', 95, 100);
+    const stripped = dates.map(d => ({
+      id: d.id,
+      date: d.date,
+      dateLabel: d.dateLabel,
+      title: d.title || '',
+      note: d.note || '',
+      driveFolderId: d.driveFolderId || null,
+      coverImgDriveId: d.coverImgDriveId || null,
+      files: (d.files || []).map(f => ({
+        name: f.name,
+        type: f.type,
+        size: f.size || 0,
+        driveId: f.driveId || null,
+        driveLink: f.driveLink || null
+      }))
+    }));
+    
+    const payload = JSON.stringify({
+      v: 3,
+      coverNames,
+      coverImgDriveId,
+      dates: stripped,
+      savedAt: Date.now()
+    });
+    
+    const result = await uploadMultipart(
+      META_NAME,
+      'application/json',
+      new Blob([payload], { type: 'application/json' }),
+      rootId,
+      metaFileId || null
+    );
+    metaFileId = result.id;
+    safeStorage.setItem('os-meta-id', metaFileId);
+    
+    updateSyncProgress('Sync complete', 100, 100);
+    setTimeout(() => updateSyncProgress('', 0, 0), 2000);
+    updateSyncButton('ok', 'Connected & Synced');
+    toast('Sync completed successfully! ☁️');
+  } catch (e) {
+    console.error('Master sync failed:', e);
+    updateSyncProgress('Sync error occurred', 100, 100);
+    setTimeout(() => updateSyncProgress('', 0, 0), 3000);
+    updateSyncButton('err', 'Sync Error');
+    toast('Sync failed. Check connection.');
+  } finally {
+    isSyncing = false;
+  }
+}
+
 async function saveMeta() {
   await dbSet('dates', dates);
   await dbSet('coverNames', coverNames);
   await dbSet('coverImg', coverImg);
 
   if (loadToken() || accessToken) {
-    updateSyncButton('busy', 'Syncing…');
-    try {
-      const stripped=dates.map(d=>({
-        id:d.id,date:d.date,dateLabel:d.dateLabel,title:d.title||'',
-        note:d.note||'',driveFolderId:d.driveFolderId||null,
-        files:(d.files||[]).map(f=>({name:f.name,type:f.type,size:f.size||0,driveId:f.driveId||null,driveLink:f.driveLink||null}))
-      }));
-      const payload=JSON.stringify({v:3,coverNames,dates:stripped,savedAt:Date.now()});
-      const result=await uploadMultipart(META_NAME,'application/json',new Blob([payload],{type:'application/json'}),ROOT_FOLDER,metaFileId||null);
-      metaFileId=result.id;
-      safeStorage.setItem('os-meta-id',metaFileId);
-      updateSyncButton('ok', 'Connected & Synced');
-    } catch(e) {
-      console.error('saveMeta drive sync error:', e);
-      updateSyncButton('err', 'Sync Error');
-    }
+    syncCloud();
   }
 }
 
@@ -574,57 +930,7 @@ async function loadMeta() {
   coverImg = (await dbGet('coverImg')) || '';
 
   if (loadToken() || accessToken) {
-    updateSyncButton('busy', 'Syncing…');
-    try {
-      metaFileId=safeStorage.getItem('os-meta-id')||null;
-      if(!metaFileId){const f=await findFile(META_NAME,ROOT_FOLDER);if(f)metaFileId=f.id;}
-      
-      if(metaFileId) {
-        safeStorage.setItem('os-meta-id',metaFileId);
-        const t=await getToken();
-        const r=await fetch(`https://www.googleapis.com/drive/v3/files/${metaFileId}?alt=media`,{headers:{'Authorization':'Bearer '+t}});
-        if(r.ok) {
-          const data=await r.json();
-          if(data.v) {
-            coverNames=data.coverNames||coverNames;
-            const driveDates = data.dates || [];
-            if (driveDates.length > 0) {
-              if (dates.length === 0) {
-                dates = driveDates;
-              } else {
-                driveDates.forEach(rd => {
-                  const localD = dates.find(x => x.id === rd.id);
-                  if (localD) {
-                    localD.title = rd.title || localD.title;
-                    localD.note = rd.note || localD.note;
-                    localD.driveFolderId = rd.driveFolderId || localD.driveFolderId;
-                    rd.files.forEach(rf => {
-                      const lf = localD.files.find(x => x.name === rf.name);
-                      if (!lf) {
-                        localD.files.push(rf);
-                      } else {
-                        lf.driveId = rf.driveId || lf.driveId;
-                        lf.driveLink = rf.driveLink || lf.driveLink;
-                      }
-                    });
-                  } else {
-                    dates.push(rd);
-                  }
-                });
-              }
-            }
-            await dbSet('dates', dates);
-            await dbSet('coverNames', coverNames);
-          }
-        }
-      } else {
-        await saveMeta();
-      }
-      updateSyncButton('ok', 'Connected & Synced');
-    } catch(e) {
-      console.warn('loadMeta drive sync failed:', e);
-      updateSyncButton('err', 'Sync Error');
-    }
+    syncCloud();
   } else {
     updateSyncButton('off', 'Local Only (Backup)');
   }
@@ -635,7 +941,8 @@ async function getDateFolder(idx){
   const d=dates[idx];
   if(d.driveFolderId)return d.driveFolderId;
   const name=d.title?`${d.date} — ${d.title}`:d.date;
-  const fid=await getOrMkFolder(name,ROOT_FOLDER);
+  const rootId = await getAppRootFolder();
+  const fid=await getOrMkFolder(name,rootId);
   dates[idx].driveFolderId=fid;
   return fid;
 }
@@ -772,7 +1079,10 @@ function setCover(inp){
   const f=inp.files[0];
   const r=new FileReader();
   r.onload=async e=>{
-    coverImg=e.target.result;paint();toast('Cover set! 💕');
+    coverImg=e.target.result;
+    coverImgDriveId=null;
+    safeStorage.removeItem('os-cover-drive-id');
+    paint();toast('Cover set! 💕');
     await saveMeta();
   };
   r.readAsDataURL(f);
@@ -830,7 +1140,15 @@ async function saveEdit(){
   dates[idx].date=dv;dates[idx].dateLabel=fmtDate(dv);dates[idx].title=ti;
   const fi=document.querySelector('#ov-edit input[type=file]');
   async function finish(){closeOv('ov-edit');paint();toast('Updated! ✨');await saveMeta();}
-  if(fi&&fi.files[0]){const r=new FileReader();r.onload=e=>{dates[idx].coverImg=e.target.result;finish();};r.readAsDataURL(fi.files[0]);}
+  if(fi&&fi.files[0]){
+    const r=new FileReader();
+    r.onload=e=>{
+      dates[idx].coverImg=e.target.result;
+      dates[idx].coverImgDriveId=null;
+      finish();
+    };
+    r.readAsDataURL(fi.files[0]);
+  }
   else await finish();
 }
 function confirmDel(){
@@ -859,9 +1177,6 @@ function addToDate(fl,dateId){
     paint();
     toast('Photos added! 📸');
     await saveMeta();
-    if (loadToken() || accessToken) {
-      arr.forEach(f => uploadFile(f, idx, f));
-    }
   });
 }
 function addMore(fl){
@@ -872,9 +1187,6 @@ function addMore(fl){
     paint();
     setTimeout(()=>openAFO(afoIdx),100);
     await saveMeta();
-    if (loadToken() || accessToken) {
-      arr.forEach(f => uploadFile(f, idx, f));
-    }
   });
 }
 function readSeq(files,idx,done){
@@ -928,6 +1240,25 @@ document.getElementById('scene').addEventListener('touchend',e=>{const dx=e.chan
 // ═══════════════════════════════════════════
 //  CLOUD BACKUP UI UTILS
 // ═══════════════════════════════════════════
+function updateSyncProgress(text, completed, total) {
+  const container = document.getElementById('sync-progress-container');
+  const txt = document.getElementById('sync-progress-text');
+  const perc = document.getElementById('sync-progress-perc');
+  const bar = document.getElementById('sync-progress-bar');
+  if (!container) return;
+  
+  if (total === 0) {
+    container.style.display = 'none';
+    return;
+  }
+  
+  container.style.display = 'block';
+  txt.textContent = text;
+  const p = Math.round((completed / total) * 100);
+  perc.textContent = p + '%';
+  bar.style.width = p + '%';
+}
+
 function updateSyncButton(status, text) {
   const btn = document.getElementById('btn-sync');
   const icon = document.getElementById('sync-icon');
@@ -993,8 +1324,11 @@ function handleDisconnectSync() {
     safeStorage.removeItem('os-token');
     safeStorage.removeItem('os-token-exp');
     safeStorage.removeItem('os-meta-id');
+    safeStorage.removeItem('os-root-folder');
+    safeStorage.removeItem('os-cover-drive-id');
     accessToken = null;
     tokenExpiry = 0;
+    coverImgDriveId = null;
     closeOv('ov-sync');
     loadMeta();
     toast('Account disconnected');
