@@ -102,6 +102,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#110805;font-family:
 .mc img,.mc video{width:100%;height:100%;object-fit:cover;display:block;}
 .mc-ov{position:absolute;inset:0;background:rgba(44,24,16,0);display:flex;align-items:center;justify-content:center;color:#fff;font-size:1rem;opacity:0;transition:all 0.2s;}
 .mc:hover .mc-ov{background:rgba(44,24,16,0.38);opacity:1;}
+.dbadge{position:absolute;bottom:3px;right:3px;background:rgba(90,158,111,0.85);border-radius:3px;padding:1px 5px;font-size:0.5rem;color:#fff;}
 .mc-plus{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:rgba(240,201,192,0.22);border:1.5px dashed rgba(212,130,122,0.4);border-radius:3px;cursor:pointer;color:var(--dusty);font-size:0.6rem;text-align:center;position:relative;min-height:45px;}
 .mc-plus input{position:absolute;inset:0;opacity:0;cursor:pointer;}
 .mc-plus-icon{font-size:1rem;}
@@ -161,6 +162,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#110805;font-family:
 .fgi{border-radius:7px;overflow:hidden;aspect-ratio:1;cursor:pointer;background:var(--parchment);position:relative;}
 .fgi img,.fgi video{width:100%;height:100%;object-fit:cover;}
 .fgi-t{position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.5);color:#fff;font-size:0.5rem;padding:1px 4px;border-radius:2px;}
+.fgi-d{position:absolute;bottom:3px;left:3px;background:rgba(90,158,111,0.85);color:#fff;font-size:0.48rem;padding:1px 4px;border-radius:2px;}
 .fgi-x{position:absolute;top:3px;left:3px;background:rgba(192,57,43,0.75);color:#fff;font-size:0.6rem;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity 0.15s;}
 .fgi:hover .fgi-x{opacity:1;}
 
@@ -190,6 +192,44 @@ html,body{width:100%;height:100%;overflow:hidden;background:#110805;font-family:
   <div class="ls-heart">💕</div>
   <div class="ls-text" id="ls-msg">Opening our story…</div>
   <div class="ls-bar-wrap"><div class="ls-bar" id="lbar"></div></div>
+</div>
+
+<!-- Sync Status Button -->
+<button id="btn-sync" onclick="openSyncModal()" style="position:fixed;top:1rem;right:1rem;z-index:80;background:rgba(253,246,238,0.07);border:1px solid rgba(201,168,76,0.2);border-radius:20px;color:var(--gold);padding:0.45rem 1rem;font-size:0.75rem;cursor:pointer;display:flex;align-items:center;gap:0.45rem;transition:all 0.2s;backdrop-filter:blur(10px);font-family:var(--sans);outline:none;">
+  <span id="sync-icon">☁️</span> <span id="sync-text">Local Only (Backup)</span>
+</button>
+
+<!-- Sync / Backup Settings Modal -->
+<div class="ov" id="ov-sync">
+  <div class="modal" style="max-width:440px;">
+    <button class="mx" onclick="closeOv('ov-sync')">✕</button>
+    <h3>Google Account Backup ☁️</h3>
+    <p class="msub" style="margin-bottom:1.1rem;">Save your memories to your Google Drive to sync across devices.</p>
+    
+    <div id="sync-status-section" style="margin-bottom:1.1rem;padding:0.75rem 0.95rem;background:rgba(212,130,122,0.09);border-radius:8px;font-size:0.8rem;color:var(--ink);display:flex;align-items:center;justify-content:space-between;border:1px solid rgba(212,130,122,0.15);">
+      <span>Status:</span> <strong id="sync-status-lbl" style="color:var(--muted);">Not Connected</strong>
+    </div>
+
+    <div class="field">
+      <label>Google Client ID</label>
+      <input type="text" id="cfg-client-id" placeholder="Paste your Google Client ID here..." style="font-size:0.8rem;">
+      <small style="display:block;margin-top:0.4rem;font-size:0.65rem;color:var(--muted);line-height:1.45;">
+        Need a Client ID? <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--rose);text-decoration:underline;font-weight:600;">Create one in Google Cloud Console</a>
+      </small>
+    </div>
+    
+    <button class="btn-ok" id="btn-action-connect" onclick="handleConnectSync()" style="margin-top:0.3rem;">Connect Google Account</button>
+    <button class="btn-del" id="btn-action-disconnect" onclick="handleDisconnectSync()" style="display:none;margin-top:0.5rem;">Disconnect Account</button>
+
+    <div style="margin-top:1.3rem;font-size:0.68rem;color:var(--muted);line-height:1.6;border-top:1px solid var(--blush);padding-top:1rem;">
+      <strong style="color:var(--deep);">OAuth Setup Checklist:</strong>
+      <ol style="margin-left:1.1rem;margin-top:0.25rem;display:flex;flex-direction:column;gap:0.2rem;">
+        <li>Create a <strong>Web application</strong> credential on Google.</li>
+        <li>Add this exact URL to <strong>Authorized redirect URIs</strong>:<br><code style="background:rgba(0,0,0,0.04);padding:2px 5px;border-radius:3px;font-family:monospace;font-size:0.62rem;color:var(--deep);font-weight:600;" id="lbl-current-origin">http://localhost:8080/</code></li>
+        <li>Paste the Client ID above and click Connect.</li>
+      </ol>
+    </div>
+  </div>
 </div>
 
 <!-- All files -->
@@ -270,6 +310,42 @@ html,body{width:100%;height:100%;overflow:hidden;background:#110805;font-family:
 
 <script>
 // ═══════════════════════════════════════════
+//  SAFE STORAGE WRAPPER
+// ═══════════════════════════════════════════
+const safeStorage = {
+  getItem(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      return this[key] || null;
+    }
+  },
+  setItem(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      this[key] = String(value);
+    }
+  },
+  removeItem(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      delete this[key];
+    }
+  }
+};
+
+// ═══════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════
+const CLIENT_ID   = safeStorage.getItem('os-client-id') || '';
+const ROOT_FOLDER = safeStorage.getItem('os-root-folder') || '13Q1y0FHe2WnlrgKPafml325PGwmyx6SK'; 
+const REDIRECT    = safeStorage.getItem('os-redirect-uri') || (window.location.origin + window.location.pathname);
+const SCOPE       = 'https://www.googleapis.com/auth/drive.file';
+const META_NAME   = 'ourstory-meta.json';
+
+// ═══════════════════════════════════════════
 //  INDEXEDDB LOCAL DATABASE
 // ═══════════════════════════════════════════
 const dbName = "OurStoryDB";
@@ -331,20 +407,252 @@ let busy=false;
 let afoIdx=null;
 let editingId=null;
 let deletingId=null;
+let accessToken=null;
+let tokenExpiry=0;
+let metaFileId=null;
 
 const AM=880, EASE='cubic-bezier(0.5,0.0,0.28,1.0)';
+
+// ═══════════════════════════════════════════
+//  OAUTH2
+// ═══════════════════════════════════════════
+function startOAuth(){
+  if(!CLIENT_ID){
+    alert('Please enter your Google Client ID first in the Cloud Backup settings!');
+    openSyncModal();
+    return;
+  }
+  safeStorage.setItem('os-pre-auth','1');
+  const params=new URLSearchParams({
+    client_id:CLIENT_ID,
+    redirect_uri:REDIRECT,
+    response_type:'token',
+    scope:SCOPE,
+    prompt:'consent',
+    access_type:'online'
+  });
+  window.location.href='https://accounts.google.com/o/oauth2/v2/auth?'+params;
+}
+
+function parseTokenFromHash(){
+  const hash=window.location.hash.substring(1);
+  if(!hash)return null;
+  const p=new URLSearchParams(hash);
+  const t=p.get('access_token');
+  const e=p.get('expires_in');
+  if(!t)return null;
+  return{token:t,expiry:Date.now()+parseInt(e||3600)*1000};
+}
+
+function saveToken(t,exp){
+  accessToken=t; tokenExpiry=exp;
+  safeStorage.setItem('os-token',t);
+  safeStorage.setItem('os-token-exp',exp.toString());
+}
+
+function loadToken(){
+  const t=safeStorage.getItem('os-token');
+  const e=parseInt(safeStorage.getItem('os-token-exp')||'0');
+  if(t&&e&&Date.now()<e-60000){accessToken=t;tokenExpiry=e;return true;}
+  return false;
+}
+
+async function getToken(){
+  if(accessToken&&Date.now()<tokenExpiry-60000)return accessToken;
+  try{
+    const t=await silentRefresh();
+    if(t)return t;
+  }catch(e){}
+  throw new Error('Need re-auth');
+}
+
+function silentRefresh(){
+  return new Promise((res,rej)=>{
+    if(!CLIENT_ID) return rej(new Error('No Client ID'));
+    const iframe=document.createElement('iframe');
+    iframe.style.display='none';
+    const params=new URLSearchParams({
+      client_id:CLIENT_ID,
+      redirect_uri:REDIRECT,
+      response_type:'token',
+      scope:SCOPE,
+      prompt:'none'
+    });
+    iframe.src='https://accounts.google.com/o/oauth2/v2/auth?'+params;
+    let done=false;
+    iframe.onload=()=>{
+      try{
+        const hash=iframe.contentWindow?.location?.hash;
+        if(hash){
+          const p=new URLSearchParams(hash.substring(1));
+          const t=p.get('access_token');
+          const e=p.get('expires_in');
+          if(t){saveToken(t,Date.now()+parseInt(e||3600)*1000);done=true;document.body.removeChild(iframe);res(t);}
+        }
+      }catch(e){}
+      if(!done){document.body.removeChild(iframe);rej(new Error('Silent auth failed'));}
+    };
+    setTimeout(()=>{if(!done){try{document.body.removeChild(iframe);}catch(e){}rej(new Error('Timeout'));}},8000);
+    document.body.appendChild(iframe);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  DRIVE API
+// ═══════════════════════════════════════════
+async function dFetch(url,opts={}){
+  const t=await getToken();
+  const r=await fetch(url,{...opts,headers:{'Authorization':'Bearer '+t,...(opts.headers||{})}});
+  if(r.status===401){saveToken('',0);throw new Error('Auth expired');}
+  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'Drive error '+r.status);}
+  return r;
+}
+
+async function findFile(name,parentId){
+  const q=`name='${name.replace(/'/g,"\\'")}' and '${parentId}' in parents and trashed=false`;
+  const r=await dFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&spaces=drive`);
+  const d=await r.json();return d.files?.[0]||null;
+}
+async function findFolder(name,parentId){
+  const q=`mimeType='application/vnd.google-apps.folder' and name='${name.replace(/'/g,"\\'")}' and '${parentId}' in parents and trashed=false`;
+  const r=await dFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)&spaces=drive`);
+  const d=await r.json();return d.files?.[0]?.id||null;
+}
+async function mkFolder(name,parentId){
+  const r=await dFetch('https://www.googleapis.com/drive/v3/files',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,mimeType:'application/vnd.google-apps.folder',parents:[parentId]})});
+  const d=await r.json();return d.id;
+}
+async function getOrMkFolder(name,parentId){return(await findFolder(name,parentId))||(await mkFolder(name,parentId));}
+
+async function uploadMultipart(name,mimeType,body,parentId,existingId=null){
+  const t=await getToken();
+  const meta=JSON.stringify(existingId?{}:{name,parents:[parentId]});
+  const bd='---OSB'+Date.now();
+  const blob=new Blob([
+    `--${bd}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`,
+    `--${bd}\r\nContent-Type: ${mimeType}\r\n\r\n`,
+    body instanceof Blob?body:new Blob([body],{type:mimeType}),
+    `\r\n--${bd}--`
+  ]);
+  const url=existingId
+    ?`https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart&fields=id,name`
+    :`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name`;
+  const r=await fetch(url,{method:existingId?'PATCH':'POST',headers:{'Authorization':'Bearer '+t,'Content-Type':`multipart/related; boundary="${bd}"`},body:blob});
+  if(r.status===401){saveToken('',0);throw new Error('Auth expired');}
+  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'Upload failed');}
+  return r.json();
+}
 
 async function saveMeta() {
   await dbSet('dates', dates);
   await dbSet('coverNames', coverNames);
   await dbSet('coverImg', coverImg);
+
+  if (loadToken() || accessToken) {
+    updateSyncButton('busy', 'Syncing…');
+    try {
+      const stripped=dates.map(d=>({
+        id:d.id,date:d.date,dateLabel:d.dateLabel,title:d.title||'',
+        note:d.note||'',driveFolderId:d.driveFolderId||null,
+        files:(d.files||[]).map(f=>({name:f.name,type:f.type,size:f.size||0,driveId:f.driveId||null,driveLink:f.driveLink||null}))
+      }));
+      const payload=JSON.stringify({v:3,coverNames,dates:stripped,savedAt:Date.now()});
+      const result=await uploadMultipart(META_NAME,'application/json',new Blob([payload],{type:'application/json'}),ROOT_FOLDER,metaFileId||null);
+      metaFileId=result.id;
+      safeStorage.setItem('os-meta-id',metaFileId);
+      updateSyncButton('ok', 'Connected & Synced');
+    } catch(e) {
+      console.error('saveMeta drive sync error:', e);
+      updateSyncButton('err', 'Sync Error');
+    }
+  }
 }
 
 async function loadMeta() {
   dates = (await dbGet('dates')) || [];
   coverNames = (await dbGet('coverNames')) || 'You & Me';
   coverImg = (await dbGet('coverImg')) || '';
+
+  if (loadToken() || accessToken) {
+    updateSyncButton('busy', 'Syncing…');
+    try {
+      metaFileId=safeStorage.getItem('os-meta-id')||null;
+      if(!metaFileId){const f=await findFile(META_NAME,ROOT_FOLDER);if(f)metaFileId=f.id;}
+      
+      if(metaFileId) {
+        safeStorage.setItem('os-meta-id',metaFileId);
+        const t=await getToken();
+        const r=await fetch(`https://www.googleapis.com/drive/v3/files/${metaFileId}?alt=media`,{headers:{'Authorization':'Bearer '+t}});
+        if(r.ok) {
+          const data=await r.json();
+          if(data.v) {
+            coverNames=data.coverNames||coverNames;
+            const driveDates = data.dates || [];
+            if (driveDates.length > 0) {
+              if (dates.length === 0) {
+                dates = driveDates;
+              } else {
+                driveDates.forEach(rd => {
+                  const localD = dates.find(x => x.id === rd.id);
+                  if (localD) {
+                    localD.title = rd.title || localD.title;
+                    localD.note = rd.note || localD.note;
+                    localD.driveFolderId = rd.driveFolderId || localD.driveFolderId;
+                    rd.files.forEach(rf => {
+                      const lf = localD.files.find(x => x.name === rf.name);
+                      if (!lf) {
+                        localD.files.push(rf);
+                      } else {
+                        lf.driveId = rf.driveId || lf.driveId;
+                        lf.driveLink = rf.driveLink || lf.driveLink;
+                      }
+                    });
+                  } else {
+                    dates.push(rd);
+                  }
+                });
+              }
+            }
+            await dbSet('dates', dates);
+            await dbSet('coverNames', coverNames);
+          }
+        }
+      } else {
+        await saveMeta();
+      }
+      updateSyncButton('ok', 'Connected & Synced');
+    } catch(e) {
+      console.warn('loadMeta drive sync failed:', e);
+      updateSyncButton('err', 'Sync Error');
+    }
+  } else {
+    updateSyncButton('off', 'Local Only (Backup)');
+  }
   return true;
+}
+
+async function getDateFolder(idx){
+  const d=dates[idx];
+  if(d.driveFolderId)return d.driveFolderId;
+  const name=d.title?`${d.date} — ${d.title}`:d.date;
+  const fid=await getOrMkFolder(name,ROOT_FOLDER);
+  dates[idx].driveFolderId=fid;
+  return fid;
+}
+
+async function uploadFile(fileObj, dateIdx, fileDataBlob) {
+  try {
+    const folderId = await getDateFolder(dateIdx);
+    const result = await uploadMultipart(fileObj.name, fileObj.type || 'application/octet-stream', fileDataBlob, folderId);
+    const fi = dates[dateIdx].files.findIndex(f => f.name === fileObj.name);
+    if(fi !== -1){
+      dates[dateIdx].files[fi].driveId = result.id;
+      await saveMeta();
+      paint();
+    }
+  } catch (e) {
+    console.error('File upload to drive failed:', e);
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -436,7 +744,7 @@ function renderDateL(i,sd){
   const d=sd[i],files=d.files||[],shown=files.slice(0,4),n=shown.length;
   let cells=shown.map((f,fi)=>{
     const v=f.type&&f.type.startsWith('video'),src=f.data||'';
-    return `<div class="mc" onclick="openLB('${d.id}',${fi})">${src?(v?`<video src="${src}" muted></video>`:`<img src="${src}" alt="">`):`<div style="display:flex;align-items:center;justify-content:center;height:100%;opacity:0.25;font-size:2rem;">🖼</div>`}<div class="mc-ov">${v?'▶':'🔍'}</div></div>`;
+    return `<div class="mc" onclick="openLB('${d.id}',${fi})">${src?(v?`<video src="${src}" muted></video>`:`<img src="${src}" alt="">`):`<div style="display:flex;align-items:center;justify-content:center;height:100%;opacity:0.25;font-size:2rem;">🖼</div>`}<div class="mc-ov">${v?'▶':'🔍'}</div>${f.driveId?'<div class="dbadge">☁</div>':''}</div>`;
   }).join('');
   if(n<4)cells+=`<div class="mc-plus"><input type="file" multiple accept="image/*,video/*" onchange="addToDate(this.files,'${d.id}')"><div class="mc-plus-icon">＋</div><div>Add photos</div></div>`;
   return `<div class="pc lp">${CRN}<div class="dh"><div class="dh-ch">Chapter ${i+1}</div><div class="dh-title">${esc(d.title||d.dateLabel)}</div>${d.title?`<div class="dh-date">${esc(d.dateLabel)}</div>`:''}<button class="dh-edit" onclick="openEdit('${d.id}')">✏️ Edit</button></div><div class="mos m${Math.min(n,4)}">${cells}</div>${files.length>4?`<div class="see-all" onclick="openAFO('${d.id}')">See all ${files.length} memories →</div>`:''}<div class="pgn">${i*2+1}</div></div>`;
@@ -547,13 +855,27 @@ async function doDelete(){
 function addToDate(fl,dateId){
   const idx=dates.findIndex(d=>d.id==dateId);if(idx===-1)return;
   const arr=Array.from(fl);
-  readSeq(arr,idx,async ()=>{paint();toast('Photos added! 📸');await saveMeta();});
+  readSeq(arr,idx,async ()=>{
+    paint();
+    toast('Photos added! 📸');
+    await saveMeta();
+    if (loadToken() || accessToken) {
+      arr.forEach(f => uploadFile(f, idx, f));
+    }
+  });
 }
 function addMore(fl){
   if(afoIdx===null)return;
   const idx=dates.findIndex(d=>d.id==afoIdx);if(idx===-1)return;
   const arr=Array.from(fl);
-  readSeq(arr,idx,async ()=>{paint();setTimeout(()=>openAFO(afoIdx),100);await saveMeta();});
+  readSeq(arr,idx,async ()=>{
+    paint();
+    setTimeout(()=>openAFO(afoIdx),100);
+    await saveMeta();
+    if (loadToken() || accessToken) {
+      arr.forEach(f => uploadFile(f, idx, f));
+    }
+  });
 }
 function readSeq(files,idx,done){
   let i=0;
@@ -573,7 +895,7 @@ function openAFO(dateId){
   d.files.forEach((f,fi)=>{
     const div=document.createElement('div');div.className='fgi';
     const v=f.type&&f.type.startsWith('video'),src=f.data||'';
-    div.innerHTML=`${src?(v?`<video src="${src}" muted></video>`:`<img src="${src}" alt="">`):`<div style="display:flex;align-items:center;justify-content:center;height:100%;opacity:0.25;font-size:2rem;background:var(--parchment);">🖼</div>`}<div class="fgi-t">${v?'VID':'IMG'}</div><div class="fgi-x" onclick="delFile(event,'${dateId}',${fi})">✕</div>`;
+    div.innerHTML=`${src?(v?`<video src="${src}" muted></video>`:`<img src="${src}" alt="">`):`<div style="display:flex;align-items:center;justify-content:center;height:100%;opacity:0.25;font-size:2rem;background:var(--parchment);">🖼</div>`}<div class="fgi-t">${v?'VID':'IMG'}</div>${f.driveId?'<div class="fgi-d">☁</div>':''}<div class="fgi-x" onclick="delFile(event,'${dateId}',${fi})">✕</div>`;
     div.onclick=()=>{if(src)openLBd(f);};g.appendChild(div);
   });
   openOv('ov-files');
@@ -604,6 +926,82 @@ document.getElementById('scene').addEventListener('touchstart',e=>{tx=e.touches[
 document.getElementById('scene').addEventListener('touchend',e=>{const dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>45)flip(dx<0?1:-1);},{passive:true});
 
 // ═══════════════════════════════════════════
+//  CLOUD BACKUP UI UTILS
+// ═══════════════════════════════════════════
+function updateSyncButton(status, text) {
+  const btn = document.getElementById('btn-sync');
+  const icon = document.getElementById('sync-icon');
+  const txt = document.getElementById('sync-text');
+  if (!btn) return;
+  if (status === 'ok') {
+    btn.style.color = '#5a9e6f';
+    btn.style.borderColor = 'rgba(90, 158, 111, 0.4)';
+    icon.textContent = '☁️';
+    txt.textContent = text || 'Connected & Synced';
+  } else if (status === 'busy') {
+    btn.style.color = 'var(--gold)';
+    btn.style.borderColor = 'rgba(201, 168, 76, 0.4)';
+    icon.textContent = '🔄';
+    txt.textContent = text || 'Syncing…';
+  } else if (status === 'err') {
+    btn.style.color = '#c46a6a';
+    btn.style.borderColor = 'rgba(196, 106, 106, 0.4)';
+    icon.textContent = '⚠️';
+    txt.textContent = text || 'Sync Error';
+  } else {
+    btn.style.color = 'var(--gold)';
+    btn.style.borderColor = 'rgba(201, 168, 76, 0.2)';
+    icon.textContent = '☁️';
+    txt.textContent = text || 'Backup to Google';
+  }
+}
+
+function openSyncModal() {
+  document.getElementById('cfg-client-id').value = safeStorage.getItem('os-client-id') || '';
+  document.getElementById('lbl-current-origin').textContent = window.location.origin + window.location.pathname;
+  const isConnected = loadToken() || accessToken;
+  const statusLbl = document.getElementById('sync-status-lbl');
+  const connectBtn = document.getElementById('btn-action-connect');
+  const disconnectBtn = document.getElementById('btn-action-disconnect');
+  if (isConnected) {
+    statusLbl.textContent = 'Connected (Synced with Google)';
+    statusLbl.style.color = '#5a9e6f';
+    connectBtn.textContent = 'Re-authorize / Sync Now';
+    disconnectBtn.style.display = 'block';
+  } else {
+    statusLbl.textContent = 'Not Connected (Local Storage Only)';
+    statusLbl.style.color = 'var(--muted)';
+    connectBtn.textContent = 'Connect Google Account';
+    disconnectBtn.style.display = 'none';
+  }
+  openOv('ov-sync');
+}
+
+function handleConnectSync() {
+  const cid = document.getElementById('cfg-client-id').value.trim();
+  if (!cid) {
+    alert('Please enter a valid Google Client ID!');
+    return;
+  }
+  safeStorage.setItem('os-client-id', cid);
+  safeStorage.setItem('os-redirect-uri', window.location.origin + window.location.pathname);
+  startOAuth();
+}
+
+function handleDisconnectSync() {
+  if (confirm('Disconnect your Google account? Your memories will remain on your device.')) {
+    safeStorage.removeItem('os-token');
+    safeStorage.removeItem('os-token-exp');
+    safeStorage.removeItem('os-meta-id');
+    accessToken = null;
+    tokenExpiry = 0;
+    closeOv('ov-sync');
+    loadMeta();
+    toast('Account disconnected');
+  }
+}
+
+// ═══════════════════════════════════════════
 //  BOOT
 // ═══════════════════════════════════════════
 function setBar(p){document.getElementById('lbar').style.width=p+'%';}
@@ -612,8 +1010,15 @@ function setMsg(m){document.getElementById('ls-msg').textContent=m;}
 async function boot(){
   try{
     setBar(10);setMsg('Opening our story…');
+    const hashToken=parseTokenFromHash();
+    if(hashToken){
+      saveToken(hashToken.token,hashToken.expiry);
+      history.replaceState(null,'',window.location.origin + window.location.pathname);
+      safeStorage.removeItem('os-pre-auth');
+    }
+    setBar(40);
     await loadMeta();
-    setBar(50);
+    setBar(70);
     paint();
     setBar(100);
   }catch(e){
